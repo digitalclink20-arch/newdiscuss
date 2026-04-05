@@ -10,21 +10,37 @@ import {
 } from './firebaseSecondary';
 import { showNotification, isNotificationsEnabled } from './pushNotificationService';
 
-// Local storage key to track if message was shown
-const ADMIN_MSG_SHOWN_KEY = 'discuss_admin_msg_shown';
+// Local storage keys
+const ADMIN_MSG_SEEN_KEY = 'discuss_admin_msg_seen';
+const ADMIN_MSG_LAST_ACTIVE_KEY = 'discuss_admin_msg_last_active';
 
 /**
- * Get the last shown message ID from localStorage
+ * Get last seen timestamp
  */
-const getShownMessageId = () => {
-  return localStorage.getItem(ADMIN_MSG_SHOWN_KEY) || '';
+const getLastSeenTime = () => {
+  return parseInt(localStorage.getItem(ADMIN_MSG_SEEN_KEY) || '0', 10);
 };
 
 /**
- * Mark message as shown
+ * Mark current message as seen
  */
-const markMessageShown = (messageId) => {
-  localStorage.setItem(ADMIN_MSG_SHOWN_KEY, messageId);
+const markAsSeen = (timestamp) => {
+  localStorage.setItem(ADMIN_MSG_SEEN_KEY, timestamp.toString());
+};
+
+/**
+ * Check if notification was already sent for this activation
+ */
+const wasNotificationSent = (activationTime) => {
+  const lastActive = localStorage.getItem(ADMIN_MSG_LAST_ACTIVE_KEY) || '0';
+  return lastActive === activationTime.toString();
+};
+
+/**
+ * Mark notification as sent for this activation
+ */
+const markNotificationSent = (activationTime) => {
+  localStorage.setItem(ADMIN_MSG_LAST_ACTIVE_KEY, activationTime.toString());
 };
 
 /**
@@ -43,31 +59,32 @@ export const subscribeToAdminMessage = (callback) => {
     
     const data = snapshot.val();
     
-    // If not active, return null
+    // If not active, return null and clear last active
     if (!data.isActive) {
+      localStorage.removeItem(ADMIN_MSG_LAST_ACTIVE_KEY);
       callback(null, false);
       return;
     }
     
-    const messageId = data.createdAt?.toString() || 'default';
-    const shownId = getShownMessageId();
-    const isNew = shownId !== messageId;
+    const activationTime = data.createdAt || Date.now();
+    const lastSeenTime = getLastSeenTime();
+    const isNew = activationTime > lastSeenTime;
     
-    // Trigger push notification only once (if new and notifications enabled)
-    if (isNew && isNotificationsEnabled()) {
+    // Trigger push notification if this activation hasn't been notified yet
+    if (!wasNotificationSent(activationTime) && isNotificationsEnabled()) {
       await showNotification('Message from Discuss Admin', {
         body: data.message?.substring(0, 100) || 'New announcement',
-        tag: 'admin-message-' + messageId,
+        tag: 'admin-message-' + activationTime,
         data: { url: '/feed', type: 'admin' }
       });
-      markMessageShown(messageId);
+      markNotificationSent(activationTime);
     }
     
     callback({
       message: data.message,
       createdAt: data.createdAt,
       isActive: data.isActive
-    }, isNew && shownId !== messageId);
+    }, isNew);
   };
   
   onValue(msgRef, handleMessage);
@@ -82,8 +99,8 @@ export const markAdminMessageSeen = () => {
   get(msgRef).then(snapshot => {
     if (snapshot.exists()) {
       const data = snapshot.val();
-      if (data.createdAt) {
-        markMessageShown(data.createdAt.toString());
+      if (data.createdAt && data.isActive) {
+        markAsSeen(data.createdAt);
       }
     }
   });
@@ -101,10 +118,11 @@ export const hasUnseenAdminMessage = async () => {
     const data = snapshot.val();
     if (!data.isActive) return false;
     
-    const messageId = data.createdAt?.toString() || 'default';
-    const shownId = getShownMessageId();
-    return shownId !== messageId;
+    const activationTime = data.createdAt || 0;
+    const lastSeenTime = getLastSeenTime();
+    return activationTime > lastSeenTime;
   } catch {
     return false;
   }
 };
+
